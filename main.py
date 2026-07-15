@@ -12,6 +12,7 @@ Thay doi so voi ban truoc:
 
 import os
 import re
+import csv
 import unicodedata
 from datetime import datetime
 import pandas as pd
@@ -19,11 +20,22 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # CAU HINH
 # ---------------------------------------------------------------------------
-INPUT_DIR  = "."         # thu muc chua data_nguoi_dan.csv & data_kham.csv
-OUTPUT_DIR = "output"    # thu muc xuat ket qua
+INPUT_DIR  = "."         
+OUTPUT_DIR = "output"    
 
-FILE_NGUOI_DAN = os.path.join(INPUT_DIR, "data/cay_sat.csv")
+FILE_NGUOI_DAN = os.path.join(INPUT_DIR, "data/16_ban_muong_toong/muong_toong_1.csv")
 FILE_KHAM      = os.path.join(INPUT_DIR, "data_kham.csv")
+
+# File thong ke tong hop: moi ban 1 dong, cong don qua nhieu lan chay.
+# Chay xong ban nao -> them/CAP NHAT DE dong cua ban do trong file nay.
+FILE_THONG_KE  = os.path.join(INPUT_DIR, "thong_ke.csv")
+
+# Tieu de cot GIU NGUYEN nhu file mau (chu y: 'Nhan khau...xong ' co 1 dau cach cuoi).
+THONG_KE_COLS = [
+    "STT", "Tên bản", "Số hộ", "Tổng số người", "Đã khám", "Chưa khám",
+    "Số hộ đã khám xong (tính cả hộ)", "Nhân khẩu trong hộ đã khám xong ",
+    "Số hộ bị lỗi", "Số hộ chuẩn", "Ghi chú",
+]
 
 TARGET_XA = "Mường Toong"
 PROVINCE  = "tỉnh Điện Biên"
@@ -75,6 +87,70 @@ def format_address(ban: str, xa: str) -> str:
     ban_name = " ".join(w.capitalize() for w in ban_name.split())
     xa_name  = " ".join(w.capitalize() for w in xa_name.split())
     return f"Bản {ban_name}, xã {xa_name}, {PROVINCE}"
+
+# ---------------------------------------------------------------------------
+# THONG KE: dung 1 dong ket qua cho 1 ban & ghi vao mau_thong_ke.csv
+# ---------------------------------------------------------------------------
+def _thong_ke_row(rec):
+    """Doi 1 phan tu tong_ket -> dict theo dung cot cua file thong ke."""
+    (ten_ban, slug, tong, so_ho, so_kham,
+     so_ho_xong, so_ho_chua, khau_ho_xong, khau_ho_chua, so_ho_thieu, ghi_chu) = rec
+    return {
+        "Tên bản": ten_ban or "(thiếu bản)",
+        "Số hộ": so_ho_xong + so_ho_chua,          # tong khoi ho (gom ca nhom thieu chu ho)
+        "Tổng số người": tong,
+        "Đã khám": so_kham,                          # so NGUOI da kham
+        "Chưa khám": tong - so_kham,
+        "Số hộ đã khám xong (tính cả hộ)": so_ho_xong,
+        "Nhân khẩu trong hộ đã khám xong ": khau_ho_xong,
+        "Số hộ bị lỗi": so_ho_thieu,                 # nhom khong tim thay dong chu ho
+        "Số hộ chuẩn": so_ho,                        # so ho co chu ho (duoc danh STT)
+        "Ghi chú": ghi_chu,
+    }
+
+def _canon_row(row):
+    """Doc lai 1 dong cu tu file -> chuan hoa ve dung cot (chiu duoc lech dau cach/hoa thuong)."""
+    lut = {re.sub(r"\s+", " ", str(k).strip()).casefold(): v for k, v in row.items()}
+    def g(col):
+        return lut.get(re.sub(r"\s+", " ", col.strip()).casefold(), "")
+    return {c: g(c) for c in THONG_KE_COLS}
+
+def ghi_thong_ke(tong_ket, path=FILE_THONG_KE):
+    """Ghi ket qua vao file thong ke: moi ban 1 dong, cong don qua cac lan chay.
+    Neu ban da co trong file -> CAP NHAT DE dong cu (giu nguyen vi tri). STT danh lai 1..N."""
+    existing, order = {}, []          # ten_ban -> dict dong ; thu tu xuat hien
+    if os.path.exists(path):
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                ten = re.sub(r"\s+", " ", str(row.get("Tên bản", "")).strip())
+                if ten == "":
+                    continue
+                if ten not in existing:
+                    order.append(ten)
+                existing[ten] = _canon_row(row)
+
+    so_moi, so_cap_nhat = 0, 0
+    for rec in tong_ket:
+        d = _thong_ke_row(rec)
+        ten = d["Tên bản"]
+        if ten in existing:
+            so_cap_nhat += 1
+        else:
+            order.append(ten)
+            so_moi += 1
+        existing[ten] = d
+
+    out_dir = os.path.dirname(path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=THONG_KE_COLS, extrasaction="ignore")
+        w.writeheader()
+        for i, ten in enumerate(order, start=1):
+            r = dict(existing[ten])
+            r["STT"] = i
+            w.writerow({c: r.get(c, "") for c in THONG_KE_COLS})
+    return path, len(order), so_moi, so_cap_nhat
 
 # ---------------------------------------------------------------------------
 # DOC data_nguoi_dan.csv -> danh sach nguoi (doc cot theo TEN tieu de)
@@ -196,8 +272,8 @@ def tra_trang_thai(cccd, ten, nam, canh_bao):
     if len(cand) == 1:
         return "Đã khám"
     if len(cand) > 1:
-        canh_bao.append(f"  ⚠ {ten}-{nam}: {len(cand)} bản ghi khám trùng Họ tên+Năm sinh -> 'Chưa khám'.")
-        return "Chưa khám"
+        canh_bao.append(f"  ⚠ {ten}-{nam}: {len(cand)} bản ghi khám trùng Họ tên+Năm sinh -> 'Đã khám'.")
+        return "Đã khám"
     return "Chưa khám"
 
 # ---------------------------------------------------------------------------
@@ -210,47 +286,52 @@ for p in persons:
     p["status"] = tra_trang_thai(p["cccd"], p["name"], p["year"], canh_bao)
 
 # ---------------------------------------------------------------------------
-# GOM HO THEO KHOI LIEN KE VI TRI DONG (KHONG so ten tren toan file)
+# GOM HO THEO TEN CHU HO (vi tri dong chi de PHAN GIAI khi trung ten)
 # ---------------------------------------------------------------------------
-# Ly do: file goc xep cac dong CUNG MOT HO nam SAT NHAU; chu ho co the o dau,
-# giua hay cuoi khoi. Neu 2 chu ho trung ten o 2 vi tri khac nhau trong file,
-# so ten toan cuc se gan nham thanh vien. Thay vao do: moi khi gap 1 dong la
-# CHU HO (Ho ten == Ho ten chu ho) thi luon MO HO MOI tai vi tri do; cac dong
-# thanh vien lien ke (co "Ho ten chu ho" khop ten voi chu ho cua khoi dang mo)
-# duoc gom vao dung khoi dang liet ke ngay ben canh no trong file.
+# Bai hoc: file goc KHONG bao dam cac dong cung ho nam sat nhau. Vi du co ho
+# 1 nguoi (chi co chu ho) chen giua chu ho va cac thanh vien cua ho khac:
+#     MUA A SINH (chu ho)  <- ho A
+#     MUA A THONG (chu ho)  <- ho B, 1 nguoi, chen vao giua
+#     MUA A LONG ... (thanh vien, chu ho = MUA A SINH)  <- van thuoc ho A
+# Neu chi gan theo "khoi dang mo gan nhat" thi cac thanh vien nay se khong tim
+# duoc chu ho MUA A SINH (da di qua) -> sai.
+#
+# Tin hieu DANG TIN duy nhat la cot 'Ho ten chu ho'. Vi vay:
+#   1) Moi dong CHU HO (Ho ten == Ho ten chu ho) mo mot HO rieng, nho vi tri dong.
+#   2) Moi THANH VIEN duoc gan vao chu ho CUNG TEN o GAN NHAT theo khoang cach dong;
+#      neu bang nhau thi uu tien chu ho o PHIA TREN (giai quyet trung ten chu ho,
+#      vi du hai nguoi cung ten 'Dang Duc Phuc').
+#   3) Thanh vien khong co chu ho cung ten nao -> nhom "mo coi" (canh bao, khong STT).
+
 order, hh = [], {}
-current_key = None  # key cua "khoi dang mo" (co the chua co chu ho - dang cho)
 
-def _new_block(chu_ho_text, ban_default):
-    key = ("B", len(order))
-    hh[key] = {"head": None, "chu_ho_text": chu_ho_text, "members": [], "ban": ban_default}
-    order.append(key)
-    return key
-
-for p in persons:
+heads_by_name = {}   # norm_key(ten chu ho) -> list vi tri (index trong persons)
+for idx, p in enumerate(persons):
     if p["is_head"]:
-        cur = hh.get(current_key) if current_key else None
-        if cur is not None and cur["head"] is None and norm_key(cur["chu_ho_text"]) == norm_key(p["name"]):
-            # Khop voi khoi dang cho chu ho (co thanh vien da xuat hien truoc)
-            cur["head"] = p
-            cur["ban"] = p["ban"]
-            p["ho_key"] = current_key
-        else:
-            # Dong CHU HO luon mo mot HO MOI (ke ca khi trung ten voi ho truoc do)
-            current_key = _new_block(p["name"], p["ban"])
-            hh[current_key]["head"] = p
-            p["ho_key"] = current_key
+        key = ("H", idx)
+        hh[key] = {"head": p, "chu_ho_text": p["name"], "members": [], "ban": p["ban"]}
+        order.append(key)
+        p["ho_key"] = key
+        heads_by_name.setdefault(norm_key(p["name"]), []).append(idx)
+
+for idx, p in enumerate(persons):
+    if p["is_head"]:
+        continue
+    cands = heads_by_name.get(norm_key(p["chu_ho"]), [])
+    if cands:
+        # Chon chu ho GAN NHAT; neu hoa khoang cach -> uu tien chu ho o PHIA TREN.
+        best_idx = min(cands, key=lambda h: (abs(h - idx), 0 if h < idx else 1))
+        key = ("H", best_idx)
+        hh[key]["members"].append(p)
+        p["ho_key"] = key
     else:
-        cur = hh.get(current_key) if current_key else None
-        if cur is not None and norm_key(cur["chu_ho_text"]) == norm_key(p["chu_ho"]):
-            # Cung khoi voi dong truoc (dang cho chu ho HOAC da co chu ho dung ten)
-            cur["members"].append(p)
-            p["ho_key"] = current_key
-        else:
-            # Bat dau mot khoi CHO CHU HO MOI (chu ho se xuat hien ngay sau day)
-            current_key = _new_block(p["chu_ho"], p["ban"])
-            hh[current_key]["members"].append(p)
-            p["ho_key"] = current_key
+        # Mo coi: khong tim thay dong chu ho cung ten -> gom chung theo ten chu ho.
+        okey = ("O", norm_key(p["chu_ho"]))
+        if okey not in hh:
+            hh[okey] = {"head": None, "chu_ho_text": p["chu_ho"], "members": [], "ban": p["ban"]}
+            order.append(okey)
+        hh[okey]["members"].append(p)
+        p["ho_key"] = okey
 
 # Loc theo XA o CAP DO HO (sau khi gom khoi, de khong lam gay tinh lien ke)
 def _block_xa(block):
@@ -288,9 +369,24 @@ for k in order:
 files_created, tong_ket = [], []
 for slug in ban_order:
     stt, out_rows, so_da_kham = 0, [], 0
+    so_ho_xong, so_ho_chua = 0, 0        # dem theo HO trong ban nay
+    khau_ho_xong, khau_ho_chua = 0, 0    # so khau (nhan khau) THUOC cac ho tuong ung
+    so_ho_thieu_chu = 0                  # so khoi ho KHONG tim thay dong chu ho
+    ghi_chu_ban = []                     # noi dung cot "Ghi chu" cho ban nay
     for k in by_ban[slug]["households"]:
         head = hh[k]["head"]
+        if head is None:
+            so_ho_thieu_chu += 1
+            ghi_chu_ban.append(f"{hh[k]['chu_ho_text']} Không tìm thấy thông tin chi tiết chủ hộ ")
         group = ([head] if head else []) + hh[k]["members"]   # CHU HO DUNG DAU
+        # HO "da kham xong" = TAT CA nguoi trong ho deu "Da kham";
+        # nguoc lai (con it nhat 1 nguoi chua kham) = "chua kham".
+        if group and all(p["status"] == "Đã khám" for p in group):
+            so_ho_xong += 1
+            khau_ho_xong += len(group)
+        else:
+            so_ho_chua += 1
+            khau_ho_chua += len(group)
         for p in group:
             if p["is_head"]:
                 stt += 1
@@ -312,7 +408,10 @@ for slug in ban_order:
     path = os.path.join(OUTPUT_DIR, f"{slug}.csv")
     df_out.to_csv(path, index=False, encoding="utf-8-sig")
     files_created.append(path)
-    tong_ket.append((by_ban[slug]["ten_ban"], slug, len(out_rows), stt, so_da_kham))
+    ghi_chu = "; ".join(ghi_chu_ban)
+    tong_ket.append((by_ban[slug]["ten_ban"], slug, len(out_rows), stt, so_da_kham,
+                     so_ho_xong, so_ho_chua, khau_ho_xong, khau_ho_chua, so_ho_thieu_chu,
+                     ghi_chu))
 
 # ---------------------------------------------------------------------------
 # IN KET QUA
@@ -320,9 +419,18 @@ for slug in ban_order:
 print("=" * 64)
 print("KẾT QUẢ XỬ LÝ")
 print("=" * 64)
-for ten_ban, slug, tong, so_ho, so_kham in tong_ket:
+for (ten_ban, slug, tong, so_ho, so_kham,
+     so_ho_xong, so_ho_chua, khau_ho_xong, khau_ho_chua, so_ho_thieu, ghi_chu) in tong_ket:
+    tong_ho = so_ho_xong + so_ho_chua        # tong so KHOI HO (= xong + chua)
     print(f"• {ten_ban or '(thiếu bản)'}  ->  {slug}.csv")
-    print(f"    Số hộ: {so_ho} | Tổng người: {tong} | Đã khám: {so_kham} | Chưa khám: {tong - so_kham}")
+    if so_ho_thieu:
+        print(f"    Số hộ: {tong_ho} ({so_ho} hộ có chủ hộ được đánh STT "
+              f"+ {so_ho_thieu} nhóm THIẾU chủ hộ không có thông tin chi tiết của chủ hộ) | Tổng người: {tong}")
+    else:
+        print(f"    Số hộ: {tong_ho} | Tổng người: {tong}")
+    print(f"    Trạng thái cá nhân → Đã khám: {so_kham} | Chưa khám: {tong - so_kham}")
+    print(f"    ├─ ĐÃ KHÁM XONG : {so_ho_xong} hộ | {khau_ho_xong} khẩu (nhân khẩu trong các hộ này)")
+    # print(f"    └─ CHƯA KHÁM    : {so_ho_chua} hộ | {khau_ho_chua} khẩu (nhân khẩu trong các hộ này)")
 
 print("\n[LOG] Người THIẾU thông tin Bản:")
 print("\n".join(thieu_ban) if thieu_ban else "  (không có)")
@@ -333,3 +441,12 @@ print("\n".join(canh_bao) if canh_bao else "  Tất cả khớp sạch, không c
 print(f"\nĐã ghi {len(files_created)} file:")
 for p in files_created:
     print("  -", p)
+
+# ---------------------------------------------------------------------------
+# GHI THONG KE TONG HOP (moi ban 1 dong, cong don qua cac lan chay)
+# ---------------------------------------------------------------------------
+tk_path, tk_tong, tk_moi, tk_capnhat = ghi_thong_ke(tong_ket)
+print("\n" + "─" * 64)
+print(f"[THỐNG KÊ] Đã cập nhật '{tk_path}': "
+      f"+{tk_moi} bản mới, {tk_capnhat} bản ghi đè, tổng {tk_tong} dòng.")
+print("─" * 64)

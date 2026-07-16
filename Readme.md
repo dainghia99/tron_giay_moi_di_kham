@@ -18,7 +18,7 @@ pip install -r requirements.txt
 ```
 4. Chuẩn hóa dữ liệu đầu vào
 
-Copy dữ liệu người dân vào file `data.csv` nằm trong thư mục `data`
+Copy dữ liệu người dân vào file `data.csv` nằm trong thư mục `data` lưu ý sử dụng dữ liệu của từng Thôn/Bản
 
 Copy dữ liệu người đi khám vào file `data_kham.csv` dữ liệu này được trích xuất trên phần mềm của y tế.
 

@@ -30,7 +30,7 @@ Sửa cấu hình trong `code` `python` nằm trong file `loc_du_lieu.csv` để
 
 Tiến hành chạy trương trình bằng câu lệnh
 ``` bash
-python loc_du_lieu.py
+python main.py
 ```
 
 ### Kết quả nằm trong thư mục `output`
